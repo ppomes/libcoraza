@@ -35,6 +35,97 @@ func TestWafIsConsistent(t *testing.T) {
 func TestAddRulesToWaf(t *testing.T) {
 }
 
+func TestRulesCount(t *testing.T) {
+	config := coraza_new_waf_config()
+	w := coraza_new_waf(config, nil)
+	if coraza_rules_count(w) != 0 {
+		t.Fatal("Expected 0 rules for empty WAF")
+	}
+	coraza_free_waf(w)
+
+	config = coraza_new_waf_config()
+	coraza_rules_add(config, stringToC(`SecRule REMOTE_ADDR "127.0.0.1" "id:1,phase:1,deny,status:403"`))
+	w = coraza_new_waf(config, nil)
+	if coraza_rules_count(w) != 1 {
+		t.Fatal("Expected 1 rule addition")
+	}
+	coraza_free_waf(w)
+
+	config = coraza_new_waf_config()
+	coraza_rules_add(config, stringToC(`SecRule REMOTE_ADDR "127.0.0.1" "id:1,phase:1,deny,status:403"`))
+	coraza_rules_add(config, stringToC(`SecRule REQUEST_URI "/test" "id:2,phase:1,deny,status:403"`))
+	w = coraza_new_waf(config, nil)
+	if coraza_rules_count(w) != 2 {
+		t.Fatal("Expected 2 rule additions")
+	}
+	coraza_free_waf(w)
+}
+
+func TestRulesMerge(t *testing.T) {
+	// Create parent WAF with a rule
+	parentConfig := coraza_new_waf_config()
+	coraza_rules_add(parentConfig, stringToC(`SecRule REMOTE_ADDR "127.0.0.1" "id:1,phase:1,deny,status:403"`))
+	parent := coraza_new_waf(parentConfig, nil)
+	if parent == 0 {
+		t.Fatal("Parent WAF initialization failed")
+	}
+
+	// Create child WAF with a different rule
+	childConfig := coraza_new_waf_config()
+	coraza_rules_add(childConfig, stringToC(`SecRule REQUEST_URI "/admin" "id:2,phase:1,deny,status:403"`))
+	child := coraza_new_waf(childConfig, nil)
+	if child == 0 {
+		t.Fatal("Child WAF initialization failed")
+	}
+
+	if coraza_rules_count(parent) != 1 {
+		t.Fatalf("Expected 1 parent rule, got %d", coraza_rules_count(parent))
+	}
+	if coraza_rules_count(child) != 1 {
+		t.Fatalf("Expected 1 child rule, got %d", coraza_rules_count(child))
+	}
+
+	// Merge parent rules into child
+	if coraza_rules_merge(child, parent, nil) != 0 {
+		t.Fatal("Merge failed")
+	}
+
+	if coraza_rules_count(child) != 2 {
+		t.Fatalf("Expected 2 child rules after merge, got %d", coraza_rules_count(child))
+	}
+
+	// Verify merged rules work: parent rule should trigger on 127.0.0.1
+	tt := coraza_new_transaction(child)
+	coraza_process_connection(tt, stringToC("127.0.0.1"), 8080, stringToC("127.0.0.1"), 80)
+	coraza_process_request_headers(tt)
+	intervention := coraza_intervention(tt)
+	if intervention == nil {
+		t.Fatal("Expected intervention from merged parent rule")
+	}
+	if intervention.status != 403 {
+		t.Fatal("Expected 403 status from intervention")
+	}
+	coraza_free_transaction(tt)
+	coraza_free_waf(child)
+	coraza_free_waf(parent)
+}
+
+func TestUpdateStatusCode(t *testing.T) {
+	config := coraza_new_waf_config()
+	w := coraza_new_waf(config, nil)
+	tt := coraza_new_transaction(w)
+	rv := coraza_update_status_code(tt, 404)
+	if rv != 0 {
+		t.Fatal("coraza_update_status_code failed")
+	}
+	tx := cgo.Handle(tt).Value().(types.Transaction)
+	txi := tx.(plugintypes.TransactionState)
+	status := txi.Variables().ResponseStatus().Get()
+	if status != "404" {
+		t.Fatalf("Expected status 404, got %s", status)
+	}
+}
+
 func TestCoraza_add_get_args(t *testing.T) {
 	config := coraza_new_waf_config()
 	waf := coraza_new_waf(config, nil)
@@ -202,7 +293,7 @@ func TestParallelWafs(t *testing.T) {
 			runtime.GC()
 
 			// check if the waf handle is valid
-			_, ok := cgo.Handle(waf).Value().(coraza.WAF)
+			_, ok := cgo.Handle(waf).Value().(*WafHandle)
 			if !ok {
 				return errors.New("Waf handle conversion failed")
 			}

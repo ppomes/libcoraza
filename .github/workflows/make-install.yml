@@ -43,3 +43,18 @@ jobs:
     - name: Install
       run: |
         sudo make V=1 install
+    - name: Run CRS tests with ftwrunner
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get install -y libpcre2-dev libyaml-dev
+        sudo ldconfig
+        git clone --depth 1 -b feat/update-libcoraza-api https://github.com/ppomes/ftwrunner.git /tmp/ftwrunner
+        cd /tmp/ftwrunner
+        autoreconf --install
+        ./configure
+        make
+        git clone --depth 1 https://github.com/coreruleset/coreruleset.git /tmp/coreruleset
+        printf 'SecRuleEngine On\nSecRequestBodyAccess On\nSecResponseBodyAccess On\nSecResponseBodyMimeType text/plain text/html text/xml application/json\nSecAction "id:900000,phase:1,nolog,pass,t:none,setvar:tx.blocking_paranoia_level=4,setvar:tx.detection_paranoia_level=4"\n' > coraza.conf
+        printf 'include coraza.conf\ninclude /tmp/coreruleset/crs-setup.conf.example\ninclude /tmp/coreruleset/plugins/empty-before.conf\ninclude /tmp/coreruleset/rules/*.conf\ninclude /tmp/coreruleset/plugins/empty-after.conf\n' > coraza_includes.conf
+        printf 'modsecurity_config: coraza_includes.conf\nftwtest_root: /tmp/coreruleset/tests/regression/tests\n' > ftwrunner.yaml
+        ./src/ftwrunner -e coraza || true
